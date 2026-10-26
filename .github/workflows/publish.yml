@@ -120,7 +120,8 @@ jobs:
       - name: Fetch every package
         run: |
           cd "$RUNNER_TEMP"
-          packages=$(sed -n 's/^Package: //p' /var/lib/apt/lists/*honkeandpastrami*_Packages | sort -u)
+          curl -fsSo Packages "$URL/dists/stable/main/binary-$(dpkg --print-architecture)/Packages"
+          packages=$(sed -n 's/^Package: //p' Packages | sort -u)
           echo "$packages"
           # shellcheck disable=SC2086 # one argument per package
           [ -z "$packages" ] || apt-get download $packages
