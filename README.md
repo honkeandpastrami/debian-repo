@@ -24,5 +24,6 @@ gh api repos/honkeandpastrami/debian-repo/dispatches -f event_type=release
 ```
 
 That call needs a fine-grained token with *Contents: read & write* on this repository,
-kept as the producer's `DEBIAN_REPO_TOKEN` secret. To add a package, attach its `.deb` to
-a release, add the repository to `sources`, and make that release notify this one.
+kept as the producer's `RELEASE_PUBLISH_TOKEN` secret; the same token updates
+homebrew-tap. To add a package, attach its `.deb` to a release, add the repository to
+`sources`, and make that release notify this one.
