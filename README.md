@@ -10,7 +10,7 @@ the last 3 releases of every repository in [`sources`](sources).
 sudo curl -fsSLo /etc/apt/keyrings/honkeandpastrami.pgp https://honkeandpastrami.github.io/debian-repo/honkeandpastrami.pgp
 printf 'Types: deb\nURIs: https://honkeandpastrami.github.io/debian-repo\nSuites: stable\nComponents: main\nSigned-By: /etc/apt/keyrings/honkeandpastrami.pgp\n' \
   | sudo tee /etc/apt/sources.list.d/honkeandpastrami.sources
-sudo apt update && sudo apt install sleep-manager exchequer-cli
+sudo apt update
 ```
 
 ## How it works
