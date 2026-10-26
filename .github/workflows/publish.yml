@@ -27,7 +27,7 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install apt-ftparchive
         run: sudo apt-get install -yq --no-install-recommends apt-utils
       - name: Download the packages
@@ -66,9 +66,39 @@ jobs:
               -o APT::FTPArchive::Release::Codename=stable \
               -o APT::FTPArchive::Release::Architectures="$ARCHITECTURES" \
               -o APT::FTPArchive::Release::Components=main \
+              -o APT::FTPArchive::Release::Acquire-By-Hash=yes \
               release dists/stable > "$RUNNER_TEMP/Release"
           mv "$RUNNER_TEMP/Release" dists/stable/Release
           cat dists/stable/Release
+      # Pages' CDN caches each file for 10 minutes, so right after a deploy a
+      # client can get this run's InRelease with an earlier run's Packages, or
+      # the reverse. apt asks for indexes by hash first, so serving the last
+      # 3 runs' indexes by hash keeps every InRelease consistent. Those come
+      # from the Actions cache; without it, a run just has no history.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: by-hash
+          key: by-hash-${{ github.run_id }}
+          restore-keys: by-hash-
+      - name: Serve the indexes by hash
+        run: |
+          gen="by-hash/$GITHUB_RUN_ID"
+          for f in site/dists/stable/main/binary-*/Packages*; do
+              for n in 256 512; do
+                  dir="$gen/$(dirname "${f#site/}")/by-hash/SHA$n"
+                  mkdir -p "$dir"
+                  cp "$f" "$dir/$(sha${n}sum "$f" | cut -d' ' -f1)"
+              done
+          done
+          find by-hash -mindepth 1 -maxdepth 1 | sort -t/ -k2 -n | head -n -3 | xargs -r rm -rf
+          for run in by-hash/*; do
+              cp -R "$run/." site/
+          done
+          find site/dists -path '*/by-hash/*' -type f | sort
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: by-hash
+          key: by-hash-${{ github.run_id }}
       - name: Sign
         working-directory: site
         env:
@@ -81,7 +111,7 @@ jobs:
           gpg --batch --yes --armor --detach-sign -o dists/stable/Release.gpg dists/stable/Release
           cp ../honkeandpastrami.pgp .
           gpgv --keyring ./honkeandpastrami.pgp dists/stable/InRelease
-      - uses: actions/upload-pages-artifact@v5
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: site
 
@@ -93,7 +123,7 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
-        uses: actions/deploy-pages@v5
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
 
   # A machine set up as the README says must update without warnings and fetch
   # every package. Installing them is each producer's own test.
@@ -120,8 +150,11 @@ jobs:
       - name: Fetch every package
         run: |
           cd "$RUNNER_TEMP"
-          curl -fsSo Packages "$URL/dists/stable/main/binary-$(dpkg --print-architecture)/Packages"
-          packages=$(sed -n 's/^Package: //p' Packages | sort -u)
+          # apt keeps its lists compressed in Debian's images; apt-helper reads either.
+          packages=$(/usr/lib/apt/apt-helper cat-file /var/lib/apt/lists/*honkeandpastrami*_Packages* |
+              sed -n 's/^Package: //p' | sort -u)
           echo "$packages"
+          # An empty list means apt read nothing from this repository.
+          test -n "$packages"
           # shellcheck disable=SC2086 # one argument per package
-          [ -z "$packages" ] || apt-get download $packages
+          apt-get download $packages
