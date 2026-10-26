@@ -21,7 +21,7 @@ concurrency:
 
 env:
   URL: https://honkeandpastrami.github.io/debian-repo
-  ARCHITECTURES: amd64 arm64
+  ARCHITECTURES: amd64 arm64 armhf
 
 jobs:
   build:
