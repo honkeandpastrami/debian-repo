@@ -1,0 +1,4 @@
+# The GitHub repositories whose releases this apt repository serves, one per line.
+# Every .deb attached to their last 3 releases is published.
+hgonzale/sleep-manager
+honkeandpastrami/exchequer

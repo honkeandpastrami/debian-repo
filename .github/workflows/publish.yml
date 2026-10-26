@@ -1,0 +1,126 @@
+# Rebuilds the apt repository from the releases of every repository in `sources`,
+# signs it, deploys it to Pages, then checks it as a client would. Every run starts
+# from scratch, so running it again is always safe.
+name: publish
+
+on:
+  push:
+    branches: [main]
+  repository_dispatch:
+    types: [release]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+env:
+  URL: https://honkeandpastrami.github.io/debian-repo
+  ARCHITECTURES: amd64 arm64
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install apt-ftparchive
+        run: sudo apt-get install -yq --no-install-recommends apt-utils
+      - name: Download the packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          grep -v '^\s*\(#\|$\)' sources | while read -r repo; do
+              dir="site/pool/main/${repo#*/}"
+              mkdir -p "$dir"
+              gh release list -R "$repo" --exclude-drafts --exclude-pre-releases --limit 3 \
+                      --json tagName -q '.[].tagName' |
+              while read -r tag; do
+                  # Releases from before a repository shipped a .deb have none.
+                  if gh release view "$tag" -R "$repo" --json assets -q '.assets[].name' |
+                          grep -q '\.deb$'; then
+                      gh release download "$tag" -R "$repo" -p '*.deb' -D "$dir"
+                  fi
+              done
+          done
+          find site/pool -name '*.deb' | sort
+      # Architecture: all packages go in every binary-<arch> index, so the
+      # Release file doesn't list `all` (wiki.debian.org/DebianRepository/Format).
+      - name: Write the indexes
+        working-directory: site
+        run: |
+          for arch in $ARCHITECTURES; do
+              dir="dists/stable/main/binary-$arch"
+              mkdir -p "$dir"
+              apt-ftparchive --arch "$arch" packages pool > "$dir/Packages"
+              gzip -9kn "$dir/Packages"
+          done
+          apt-ftparchive \
+              -o APT::FTPArchive::Release::Origin=honkeandpastrami \
+              -o APT::FTPArchive::Release::Label=honkeandpastrami \
+              -o APT::FTPArchive::Release::Suite=stable \
+              -o APT::FTPArchive::Release::Codename=stable \
+              -o APT::FTPArchive::Release::Architectures="$ARCHITECTURES" \
+              -o APT::FTPArchive::Release::Components=main \
+              release dists/stable > "$RUNNER_TEMP/Release"
+          mv "$RUNNER_TEMP/Release" dists/stable/Release
+          cat dists/stable/Release
+      - name: Sign
+        working-directory: site
+        env:
+          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
+        run: |
+          export GNUPGHOME="$RUNNER_TEMP/gnupg"
+          install -d -m 700 "$GNUPGHOME"
+          gpg --batch --import <<< "$SIGNING_KEY"
+          gpg --batch --yes --clearsign -o dists/stable/InRelease dists/stable/Release
+          gpg --batch --yes --armor --detach-sign -o dists/stable/Release.gpg dists/stable/Release
+          cp ../honkeandpastrami.pgp .
+          gpgv --keyring ./honkeandpastrami.pgp dists/stable/InRelease
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5
+
+  # A machine set up as the README says must update without warnings and fetch
+  # every package. Installing them is each producer's own test.
+  check:
+    needs: deploy
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        debian: [bookworm, trixie]
+    container: debian:${{ matrix.debian }}
+    steps:
+      - name: Set up the repository
+        run: |
+          apt-get update -q
+          apt-get install -yq --no-install-recommends curl ca-certificates
+          install -d /etc/apt/keyrings
+          curl -fsSLo /etc/apt/keyrings/honkeandpastrami.pgp "$URL/honkeandpastrami.pgp"
+          printf 'Types: deb\nURIs: %s\nSuites: stable\nComponents: main\nSigned-By: /etc/apt/keyrings/honkeandpastrami.pgp\n' \
+              "$URL" > /etc/apt/sources.list.d/honkeandpastrami.sources
+      - name: Update
+        run: |
+          apt-get update 2>&1 | tee "$RUNNER_TEMP/update.log"
+          ! grep -E '^(W|E|Err):' "$RUNNER_TEMP/update.log"
+      - name: Fetch every package
+        run: |
+          cd "$RUNNER_TEMP"
+          packages=$(sed -n 's/^Package: //p' /var/lib/apt/lists/*honkeandpastrami*_Packages | sort -u)
+          echo "$packages"
+          # shellcheck disable=SC2086 # one argument per package
+          [ -z "$packages" ] || apt-get download $packages
